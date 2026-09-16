@@ -1,0 +1,27 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "PiHome Ultimate (Windows)",
+      "request": "launch",
+      "type": "dart",
+      "deviceId": "windows",
+      "program": "lib/main.dart"
+    },
+    {
+      "name": "PiHome Ultimate (Linux / Raspberry Pi)",
+      "request": "launch",
+      "type": "dart",
+      "deviceId": "linux",
+      "program": "lib/main.dart"
+    },
+    {
+      "name": "PiHome Ultimate (Windows, release)",
+      "request": "launch",
+      "type": "dart",
+      "deviceId": "windows",
+      "flutterMode": "release",
+      "program": "lib/main.dart"
+    }
+  ]
+}

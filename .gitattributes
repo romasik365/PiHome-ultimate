@@ -1,0 +1,21 @@
+# Normaliza los finales de línea a LF en el repositorio.
+#
+# El proyecto se desarrolla en Windows (CRLF) pero se compila y prueba en
+# Linux / Raspberry Pi (LF). Sin esto, `dart format --set-exit-if-changed`
+# y los diffs del CI se ensucian con cambios de saltos de línea.
+* text=auto eol=lf
+
+# Binarios: nunca normalizar.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+
+# Los scripts de shell deben conservar LF para poder ejecutarse en Linux.
+*.sh text eol=lf
+*.service text eol=lf
