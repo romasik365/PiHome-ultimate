@@ -12,11 +12,14 @@ import 'package:smart_display/models/app_settings.dart';
 import 'package:smart_display/services/app_storage.dart';
 import 'package:smart_display/services/weather_service.dart';
 
+import 'helpers/fake_connectivity_services.dart';
+
 /// Pruebas de widgets de la pantalla principal a resolución real (800x480).
 ///
 /// * El plugin de audio se simula con canales mock.
 /// * El clima se sirve desde un [MockClient] (sin red real).
-/// * Los favoritos reales del usuario se respaldan y restauran.
+/// * La conectividad se simula sin ejecutar procesos nativos.
+/// * Los ajustes y favoritos usan una carpeta temporal aislada.
 /// * NUNCA se usa pumpAndSettle: el reloj tiene un Timer.periodic de 1 s.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -93,6 +96,8 @@ void main() {
         home: SmartDisplayScreen(
           settings: settings ?? testSettings(),
           onSettingsChanged: changes.add,
+          wifiService: FakeWifiService(),
+          bluetoothService: FakeBluetoothService(),
         ),
       ),
     );

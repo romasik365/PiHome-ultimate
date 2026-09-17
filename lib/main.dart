@@ -95,7 +95,16 @@ Future<void> _bootstrap() async {
 class SmartDisplayApp extends StatefulWidget {
   final AppSettings initialSettings;
 
-  const SmartDisplayApp({super.key, required this.initialSettings});
+  /// Dependencias opcionales para probar el arranque sin procesos del sistema.
+  final WifiService? wifiService;
+  final BluetoothService? bluetoothService;
+
+  const SmartDisplayApp({
+    super.key,
+    required this.initialSettings,
+    this.wifiService,
+    this.bluetoothService,
+  });
 
   @override
   State<SmartDisplayApp> createState() => _SmartDisplayAppState();
@@ -141,6 +150,8 @@ class _SmartDisplayAppState extends State<SmartDisplayApp> {
     final main = SmartDisplayScreen(
       settings: _settings,
       onSettingsChanged: _applySettings,
+      wifiService: widget.wifiService,
+      bluetoothService: widget.bluetoothService,
     );
     if (!_showBoot) return main;
 

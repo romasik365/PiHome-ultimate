@@ -12,11 +12,14 @@ import 'package:smart_display/models/app_settings.dart';
 import 'package:smart_display/services/app_storage.dart';
 import 'package:smart_display/services/weather_service.dart';
 
+import 'helpers/fake_connectivity_services.dart';
+
 /// Integración de la animación de arranque con la app completa.
 ///
 /// Comprueba que [SmartDisplayApp] superpone el [BootScreen] cuando
 /// `bootAnimation` está activo y lo retira al terminar, y que no aparece si el
-/// usuario lo desactiva. Se mockean audio y clima y se respalda settings.json.
+/// usuario lo desactiva. Audio, clima y conectividad se simulan; los ajustes
+/// se guardan en una carpeta temporal aislada.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -69,8 +72,19 @@ void main() {
     tester.view.physicalSize = const Size(800, 480);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
-    await tester.pumpWidget(SmartDisplayApp(initialSettings: settings));
+    final wifi = FakeWifiService();
+    final bluetooth = FakeBluetoothService();
+    await tester.pumpWidget(
+      SmartDisplayApp(
+        initialSettings: settings,
+        wifiService: wifi,
+        bluetoothService: bluetooth,
+      ),
+    );
     await tester.pump();
+    // Regresión: la app raíz debe propagar ambos dobles a la pantalla.
+    expect(wifi.currentSsidCalls, greaterThan(0));
+    expect(bluetooth.connectedDevicesCalls, greaterThan(0));
   }
 
   testWidgets('con bootAnimation activo muestra el boot y luego lo retira', (
