@@ -40,7 +40,14 @@ class ConnectivityIcons extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (!settings.showConnectivityIcons) return const SizedBox.shrink();
-    final wifiOn = settings.wifiEnabled && status.hasWifi;
+    // Respaldo documentado en WifiService.currentSsid(): si el chequeo en vivo
+    // no aporta nada ("desconocido": herramienta ausente, fuera de Linux o sin
+    // permisos) se usa el SSID guardado en los ajustes. Si el chequeo sí sabe
+    // que NO hay red (`wifiUnknown == false` y `wifiSsid == null`) manda eso.
+    final String? wifiSsid = status.wifiUnknown
+        ? (status.wifiSsid ?? settings.wifiSsid)
+        : status.wifiSsid;
+    final wifiOn = settings.wifiEnabled && wifiSsid != null;
     final btConnected = settings.bluetoothEnabled && status.hasBtConnected;
     final btPairedOnly =
         settings.bluetoothEnabled &&
@@ -50,10 +57,10 @@ class ConnectivityIcons extends StatelessWidget {
 
     final wifiTooltip = !settings.wifiEnabled
         ? 'Wi-Fi desactivado'
-        : status.wifiUnknown && status.wifiSsid == null
-        ? 'Wi-Fi desconocido'
         : wifiOn
-        ? 'Wi-Fi: ${status.wifiSsid ?? ''}'
+        ? 'Wi-Fi: $wifiSsid'
+        : status.wifiUnknown
+        ? 'Wi-Fi desconocido'
         : 'Wi-Fi sin conexión';
     final btNames = status.btConnected.map((d) => d.name).join(', ');
     final btTooltip = !settings.bluetoothEnabled

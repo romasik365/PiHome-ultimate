@@ -163,6 +163,41 @@ void main() {
     await unmount(tester);
   });
 
+  testWidgets('ssid desconocido usa el guardado en ajustes como respaldo', (
+    tester,
+  ) async {
+    // Fuera de Linux (o sin nmcli) el chequeo en vivo devuelve null: la UI
+    // debe caer al SSID guardado y encender el icono.
+    final s = AppSettings.defaults().copyWith(
+      wifiEnabled: true,
+      wifiSsid: 'MiCasa',
+    );
+    await pumpWith(
+      tester,
+      settings: s,
+      connectivity: svc(_FakeWifi(null), _FakeBt(const [])),
+    );
+    expect(find.byIcon(Icons.wifi), findsOneWidget);
+    expect(find.byIcon(Icons.wifi_off), findsNothing);
+    expect(tester.takeException(), isNull);
+    await unmount(tester);
+  });
+
+  testWidgets('ssid desconocido y sin respaldo muestra wifi_off', (
+    tester,
+  ) async {
+    final s = AppSettings.defaults().copyWith(wifiEnabled: true);
+    await pumpWith(
+      tester,
+      settings: s,
+      connectivity: svc(_FakeWifi(null), _FakeBt(const [])),
+    );
+    expect(find.byIcon(Icons.wifi_off), findsOneWidget);
+    expect(find.byIcon(Icons.wifi), findsNothing);
+    expect(tester.takeException(), isNull);
+    await unmount(tester);
+  });
+
   testWidgets('bluetooth conectado en vivo enciende bluetooth_connected', (
     tester,
   ) async {
