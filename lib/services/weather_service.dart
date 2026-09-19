@@ -148,14 +148,22 @@ class WeatherService {
   static Future<WeatherData> fetchGuissonaWeather() =>
       fetchWeather(latitude: 41.785, longitude: 1.289);
 
+  /// Clave ASCII del icono de tiempo: 'sunny', 'partly', 'fog', 'rain',
+  /// 'snow', 'showers' o 'storm'.
+  ///
+  /// Es una clave y NO un emoji a proposito: antes devolvia emojis y en la
+  /// Raspberry Pi el motor no encontraba ninguna fuente que los incluyera
+  /// (Debian minimo, sin DejaVu ni Noto Emoji), asi que se dibujaba el
+  /// cuadradito "tofu" que se veia en la pantalla del kiosco. La interfaz
+  /// traduce la clave a un icono de MaterialIcons (ver WeatherIcon).
   static String _getWeatherIcon(int code) {
-    if (code == 0) return "☀️";
-    if (code <= 3) return "⛅";
-    if (code <= 48) return "🌫️";
-    if (code <= 67) return "🌧️";
-    if (code <= 77) return "❄️";
-    if (code <= 82) return "🌦️";
-    return "⛈️";
+    if (code == 0) return 'sunny';
+    if (code <= 3) return 'partly';
+    if (code <= 48) return 'fog';
+    if (code <= 67) return 'rain';
+    if (code <= 77) return 'snow';
+    if (code <= 82) return 'showers';
+    return 'storm';
   }
 
   static String _getWeatherDescription(int code) {

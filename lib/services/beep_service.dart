@@ -1,23 +1,22 @@
+import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/foundation.dart';
 
 import 'app_storage.dart';
 
-/// Sonido de alarma local ("pitido") sin assets ni red.
+/// Sonido de alarma local (pitido) usando reproductor nativo en Linux.
 ///
-/// Sintetiza en caliente un WAV PCM de 16 bits (3 pitidos de 880 Hz con
-/// envolvente para evitar clics), lo guarda en la carpeta de configuración y
-/// lo reproduce en bucle con un [AudioPlayer] independiente del de la radio,
-/// de modo que detener la alarma no interfiere con la emisora.
+/// Sintetiza un WAV PCM de 16 bits y lo reproduce con aplay en Linux.
+/// En Windows no se reproduce (la alarma visual sigue funcionando).
 class BeepService {
-  AudioPlayer? _player;
+  Process? _process;
   bool _playing = false;
 
   static const _fileName = 'alarm_beep.wav';
 
-  /// Crea el archivo WAV la primera vez que hace falta.
   Future<String?> _ensureFile() async {
     final file = AppStorage.configFile(_fileName);
     if (file == null) return null;
@@ -27,50 +26,51 @@ class BeepService {
     return file.path;
   }
 
-  /// Empieza a sonar el pitido en bucle. No hace nada si ya está sonando.
   Future<void> start() async {
     if (_playing) return;
-    _playing = true;
-    try {
-      final path = await _ensureFile();
-      if (!_playing) {
-        // Se llamó a stop() mientras se creaba/verificaba el archivo.
-        return;
-      }
-      if (path == null) {
-        _playing = false;
-        return;
-      }
-      final player = _player ??= AudioPlayer();
-      await player.setReleaseMode(ReleaseMode.loop);
-      await player.setVolume(1.0);
-      if (!_playing) return;
-      await player.play(DeviceFileSource(path));
-    } catch (_) {
+    final path = await _ensureFile();
+    if (path == null) {
       _playing = false;
-      // Sin audio disponible: la alarma visual sigue apareciendo.
+      return;
+    }
+
+    if (Platform.isLinux) {
+      _playing = true;
+      try {
+        _process = await Process.start('aplay', ['-q', '-f', 'S16_LE', path]);
+        _process!.exitCode.then((_) {
+          _playing = false;
+          _process = null;
+        });
+      } catch (_) {
+        _playing = false;
+      }
+    } else {
+      // En Windows no hay reproductor nativo, la alarma solo visual
+      _playing = false;
     }
   }
 
-  /// Detiene el pitido.
   Future<void> stop() async {
     _playing = false;
-    try {
-      await _player?.stop();
-    } catch (_) {}
+    if (Platform.isLinux) {
+      try {
+        _process?.kill();
+      } catch (_) {}
+      _process = null;
+    }
   }
 
-  /// Libera el reproductor.
   Future<void> dispose() async {
     _playing = false;
-    try {
-      await _player?.stop();
-      await _player?.dispose();
-    } catch (_) {}
-    _player = null;
+    if (Platform.isLinux) {
+      try {
+        _process?.kill();
+      } catch (_) {}
+      _process = null;
+    }
   }
 
-  /// WAV mono 16-bit 44,1 kHz: 3 pitidos de 250 ms separados por 150 ms.
   static Uint8List _buildBeepWav() {
     const sampleRate = 44100;
     const frequency = 880.0;
@@ -90,18 +90,17 @@ class BeepService {
     ]);
     void w16(int v) => bytes.add([v & 0xFF, (v >> 8) & 0xFF]);
 
-    // Cabecera RIFF/WAVE (PCM, mono, 16 bits).
     bytes.add('RIFF'.codeUnits);
     w32(36 + dataSize);
     bytes.add('WAVE'.codeUnits);
     bytes.add('fmt '.codeUnits);
-    w32(16); // tamaño del bloque fmt
-    w16(1); // PCM
-    w16(1); // mono
+    w32(16);
+    w16(1);
+    w16(1);
     w32(sampleRate);
-    w32(sampleRate * 2); // bytes por segundo
-    w16(2); // bytes por muestra (bloque)
-    w16(16); // bits por muestra
+    w32(sampleRate * 2);
+    w16(2);
+    w16(16);
     bytes.add('data'.codeUnits);
     w32(dataSize);
 
@@ -110,7 +109,6 @@ class BeepService {
       final posInCycle = ms % (beepMs + gapMs);
       var sample = 0;
       if (posInCycle < beepMs) {
-        // Envolvente del 10% a cada lado para evitar clics.
         final pos = posInCycle / beepMs;
         final envelope = pos < 0.1
             ? pos / 0.1

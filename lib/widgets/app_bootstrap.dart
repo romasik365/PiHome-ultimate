@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show MissingPluginException;
 
 import '../services/app_log.dart';
 import 'error_screen.dart';
@@ -42,6 +43,15 @@ class _AppBootstrapState extends State<AppBootstrap> {
 
   void _handleFatal(Object error, StackTrace? stackTrace) {
     if (!mounted) return;
+    // En la Raspberry Pi la app corre con flutter-pi, que no registra los
+    // plugins nativos implementados con GTK (`window_manager`, `audioplayers`,
+    // ...). Un plugin ausente degrada una función concreta (por ejemplo el
+    // audio de la radio), pero NO debe sustituir el panel por la pantalla de
+    // error: el kiosco tiene que seguir mostrando la hora y el tiempo.
+    if (error is MissingPluginException) {
+      AppLog.warn('Plugin nativo no disponible; se continúa sin él: $error');
+      return;
+    }
     // Evita reconstrucciones repetidas si el error se repite en bucle.
     if (identical(_fatalError, error)) return;
     setState(() {

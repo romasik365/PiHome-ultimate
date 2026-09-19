@@ -63,13 +63,19 @@ class _InteractiveCardState extends State<InteractiveCard> {
 }
 
 /// Badge de la barra superior. [fontSize] permite escalar el texto desde los
-/// ajustes de tipografía.
+/// ajustes de tipografía y [icon] añade un icono vectorial a la izquierda.
+///
+/// Antes el símbolo iba dentro del texto (emojis "💤", "☀️", "⚙️"). En la
+/// Raspberry Pi el sistema no tiene ninguna fuente con esos pictogramas, así
+/// que se dibujaba un cuadradito. Con [icon] se usa un [Icon] de MaterialIcons,
+/// que viaja **dentro del bundle** y se ve igual en todas las plataformas.
 Widget buildBadge(
   String text,
   Color bg,
   Color border,
   Color textColor, [
   double fontSize = 11,
+  IconData? icon,
 ]) {
   return Container(
     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -78,13 +84,22 @@ Widget buildBadge(
       borderRadius: BorderRadius.circular(14),
       border: Border.all(color: border),
     ),
-    child: Text(
-      text,
-      style: TextStyle(
-        color: textColor,
-        fontSize: fontSize,
-        fontWeight: FontWeight.w500,
-      ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (icon != null) ...[
+          Icon(icon, size: fontSize * 1.25, color: textColor),
+          const SizedBox(width: 5),
+        ],
+        Text(
+          text,
+          style: TextStyle(
+            color: textColor,
+            fontSize: fontSize,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ],
     ),
   );
 }

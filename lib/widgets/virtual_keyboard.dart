@@ -66,7 +66,16 @@ class _VirtualKeyboardSheetState extends State<_VirtualKeyboardSheet> {
     }
   }
 
-  Widget _key(String label, {int flex = 1, VoidCallback? onTap, Color? bg}) {
+  /// Tecla del teclado. [icon] permite dibujar un icono de MaterialIcons en
+  /// lugar del texto: los símbolos '⇧' (shift) y '⌫' (backspace) no existen en
+  /// ninguna fuente de la Raspberry Pi, así que se veían como cuadraditos.
+  Widget _key(
+    String label, {
+    int flex = 1,
+    VoidCallback? onTap,
+    Color? bg,
+    IconData? icon,
+  }) {
     return Expanded(
       flex: flex,
       child: Padding(
@@ -80,13 +89,15 @@ class _VirtualKeyboardSheetState extends State<_VirtualKeyboardSheet> {
             child: Center(
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 12),
-                child: Text(
-                  label,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
+                child: icon != null
+                    ? Icon(icon, size: 20)
+                    : Text(
+                        label,
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
               ),
             ),
           ),
@@ -164,13 +175,20 @@ class _VirtualKeyboardSheetState extends State<_VirtualKeyboardSheet> {
           Row(
             children: [
               _key(
-                '⇧',
+                'Shift',
                 flex: 2,
+                icon: Icons.keyboard_arrow_up,
                 bg: _shift ? cs.primaryContainer : null,
                 onTap: () => setState(() => _shift = !_shift),
               ),
               ...r3.map((k) => _key(_shift ? k.toUpperCase() : k)),
-              _key('⌫', flex: 2, bg: cs.errorContainer, onTap: _backspace),
+              _key(
+                'Borrar',
+                flex: 2,
+                icon: Icons.backspace,
+                bg: cs.errorContainer,
+                onTap: _backspace,
+              ),
             ],
           ),
           // Fila inferior: ?123, espacio, OK

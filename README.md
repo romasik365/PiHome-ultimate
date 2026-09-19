@@ -69,6 +69,47 @@ flutter build windows --release
 flutter build linux --release
 ```
 
+### Desplegar en la Raspberry Pi (flutter-pi)
+
+[flutter-pi](https://github.com/ardera/flutter-pi) ejecuta el bundle
+directamente sobre DRM/KMS, sin escritorio ni servidor gráfico: es lo que usa el
+kiosco en la pantalla DSI de 800×480.
+
+```bash
+# 1. Compilar el bundle (debug = JIT) desde el PC
+flutter build bundle --target-platform=windows-x64
+
+# 2. Copiarlo a la Pi (se conserva la carpeta flutter_engine/ del bundle)
+scp -r build\flutter_assets roma@192.168.18.97:/home/roma/
+ssh roma@192.168.18.97 "cp -r /home/roma/flutter_assets/. /home/roma/smart_display_bundle/"
+
+# 3. Lanzarlo en la pantalla física (sigue vivo al cerrar el SSH)
+ssh roma@192.168.18.97 "cd ~ && setsid nohup flutter-pi /home/roma/smart_display_bundle > ~/flutter_pi_run.log 2>&1 < /dev/null &"
+```
+
+> **El flag `--target-platform` no cambia lo que usa flutter-pi.** En un PC con
+> Windows la única arquitectura disponible es `windows-x64` (`linux-arm64`
+> intentaría compilar AOT y falla, porque no hay `gen_snapshot` para esa
+> arquitectura). El `flutter_assets` resultante es el mismo bundle que
+> interpreta la Pi en modo **JIT** (`kernel_blob.bin` es independiente de la
+> arquitectura).
+>
+> **Modo release (AOT).** `flutter-pi --release` necesita un `libapp.so` de ARM
+> generado **en la propia Pi** (no tiene SDK de Flutter, por eso hoy se usa
+> `debug`). El motor ARM64 ya está instalado en
+> `/usr/lib/libflutter_engine.so.debug` (paquete `flutter-engine-binaries-for-arm`).
+>
+> **Plugins nativos.** `flutter-pi` no registra los plugins GTK: no hay
+> `window_manager` ni `audioplayers`. Por eso `main.dart` sólo gestiona la
+> ventana en Windows (`Platform.isWindows`) y `AppBootstrap` ignora los
+> `MissingPluginException`: degradan una función (audio), no el panel completo.
+>
+> **Pi 3B (ARM64, 1 GB).** El arranque en modo debug tarda ~60 s (JIT) y ocupa
+> ~300 MB de RAM; conviene `gpu_mem=128` en `/boot/firmware/config.txt`. Para
+> diagnósticos: `~/.config/pi_home_ultimate/app.log` (log de la app),
+> `~/flutter_pi_run.log` (salida de flutter-pi) y el VM service que publica
+> flutter-pi en modo debug (útil con `flutter attach`).
+
 ---
 
 ## Pruebas

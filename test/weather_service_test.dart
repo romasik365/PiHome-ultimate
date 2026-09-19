@@ -27,7 +27,7 @@ void main() {
       final w = WeatherService.parseWeatherResponse(sampleResponse());
 
       expect(w.temp, '21°C');
-      expect(w.icon, '⛅');
+      expect(w.icon, 'partly');
       expect(w.description, 'Parcialmente nublado');
       expect(w.humidity, '55%');
       expect(w.wind, '12 km/h');
@@ -37,9 +37,9 @@ void main() {
       expect(w.forecast[0].max, 25);
       expect(w.forecast[0].min, 12);
       expect(w.forecast[1].day, 'Mañana');
-      expect(w.forecast[1].icon, '🌧️'); // código 61 = lluvia
+      expect(w.forecast[1].icon, 'rain'); // código 61 = lluvia
       expect(w.forecast[2].day, 'Pasado');
-      expect(w.forecast[2].icon, '☀️'); // código 0 = despejado
+      expect(w.forecast[2].icon, 'sunny'); // código 0 = despejado
     });
 
     test('sufijo de Fahrenheit cuando temperatureUnit es F', () {
@@ -78,13 +78,13 @@ void main() {
           'temperature_2m_min': [0.0, 0.0, 0.0],
         },
       };
-      expect(WeatherService.parseWeatherResponse(withCode(96)).icon, '⛈️');
+      expect(WeatherService.parseWeatherResponse(withCode(96)).icon, 'storm');
       expect(
         WeatherService.parseWeatherResponse(withCode(96)).description,
         'Tormenta',
       );
-      expect(WeatherService.parseWeatherResponse(withCode(73)).icon, '❄️');
-      expect(WeatherService.parseWeatherResponse(withCode(45)).icon, '🌫️');
+      expect(WeatherService.parseWeatherResponse(withCode(73)).icon, 'snow');
+      expect(WeatherService.parseWeatherResponse(withCode(45)).icon, 'fog');
       expect(
         WeatherService.parseWeatherResponse(withCode(80)).description,
         'Chubascos',

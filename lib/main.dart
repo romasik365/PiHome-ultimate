@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -18,8 +20,10 @@ import 'services/wifi_service.dart';
 import 'screens/settings_screen.dart';
 import 'widgets/app_bootstrap.dart';
 import 'widgets/boot_screen.dart';
+import 'widgets/clock_text.dart';
 import 'widgets/connectivity_icons.dart';
 import 'widgets/interactive_card.dart';
+import 'widgets/weather_icon.dart';
 
 /// Arranque de la app.
 ///
@@ -37,16 +41,18 @@ void main() {
   }, (error, stack) => AppLog.error('Error no capturado', error, stack));
 }
 
-Future<void> _bootstrap() async {
-  // La gestión de ventana sólo existe en escritorio: si la plataforma no la
-  // soporta (p. ej. al lanzar en un navegador) se ignora, para que la app siga
-  // arrancando en lugar de quedarse en pantalla en blanco.
-  try {
-    await windowManager.ensureInitialized();
-  } catch (error) {
-    AppLog.warn('Sin gestión de ventana: $error');
-  }
+/// `true` sólo en las plataformas cuyo runner nativo registra el plugin
+/// `window_manager`.
+///
+/// Se limita a propósito a Windows: es la única plataforma de escritorio para
+/// la que este proyecto genera runner nativo (`windows/`). En la Raspberry Pi
+/// la app se lanza con **flutter-pi**, que no registra los plugins GTK
+/// (`window_manager`, `audioplayers`...); allí `Platform.isWindows` es `false`,
+/// así que no se toca el `MethodChannel` y no puede aparecer el
+/// `MissingPluginException` que tumbaba el arranque del kiosco.
+bool get _canManageWindow => !kIsWeb && Platform.isWindows;
 
+Future<void> _bootstrap() async {
   AppSettings settings;
   try {
     settings = await SettingsStore.load();
@@ -55,11 +61,68 @@ Future<void> _bootstrap() async {
     settings = AppSettings.defaults();
   }
 
-  // NUEVO: el tamaño de ventana configurado por el usuario (si es válido).
+  await _configureWindow(settings);
+
+  // La radio Wi-Fi y el adaptador Bluetooth pueden llegar apagados o
+  // bloqueados por rfkill al arrancar (estado típico de una instalación nueva
+  // de Raspberry Pi OS: "hci0 Soft blocked: yes"). Se preparan en segundo
+  // plano para no retrasar el primer frame; si algo falla, la página de
+  // Ajustes muestra el motivo.
+  unawaited(_prepareRadios(settings));
+
+  AppLog.info('Ajustes cargados');
+  // AppBootstrap envuelve la app: si ocurre un error fatal, sustituye la
+  // interfaz por una pantalla de error con botón de reinicio en vez de dejar
+  // la pantalla en blanco (crítico en un kiosco sin teclado ni consola).
+  runApp(
+    AppBootstrap(
+      accentColor: settings.accentColor,
+      appBuilder: (key) => SmartDisplayApp(key: key, initialSettings: settings),
+    ),
+  );
+}
+
+/// Deja la radio Wi-Fi y el Bluetooth listos según los ajustes del usuario.
+///
+/// Nunca lanza: cualquier fallo queda registrado en el log. En la Pi esto
+/// desbloquea el adaptador Bluetooth (`rfkill unblock bluetooth`) y lo enciende
+/// si el usuario tenía Bluetooth activado; sin esto, el kiosco arrancaba con el
+/// adaptador bloqueado y la página de Bluetooth salía vacía sin explicación.
+Future<void> _prepareRadios(AppSettings settings) async {
+  try {
+    if (settings.wifiEnabled) await WifiService().ensureEnabled();
+    if (settings.bluetoothEnabled) {
+      final bt = BluetoothService();
+      final ready = await bt.ensureReady();
+      if (!ready && bt.lastError != null) {
+        AppLog.warn('Bluetooth no disponible al arrancar: ${bt.lastError}');
+      }
+    }
+  } catch (error, stack) {
+    AppLog.error('No se pudieron preparar las radios', error, stack);
+  }
+}
+
+/// Aplica el tamaño, el centrado y el título de la ventana de escritorio.
+///
+/// Se omite por completo cuando la plataforma no tiene el plugin nativo
+/// (Raspberry Pi con flutter-pi, web, pruebas) y, aun así, cada llamada al
+/// plugin queda protegida con `try/catch`: si la plataforma cambia o el runner
+/// nativo falta, el kiosco sigue arrancando en vez de quedarse en negro.
+Future<void> _configureWindow(AppSettings settings) async {
+  if (!_canManageWindow) {
+    AppLog.info(
+      'Gestión de ventana omitida: '
+      '${kIsWeb ? 'web' : Platform.operatingSystem} sin plugin nativo',
+    );
+    return;
+  }
+
+  // Tamaño de ventana configurado por el usuario (si es válido).
   final winW = settings.windowWidth.round().clamp(400, 3840);
   final winH = settings.windowHeight.round().clamp(300, 2160);
 
-  WindowOptions windowOptions = WindowOptions(
+  final windowOptions = WindowOptions(
     size: Size(winW.toDouble(), winH.toDouble()),
     minimumSize: const Size(400, 300),
     maximumSize: const Size(3840, 2160),
@@ -70,24 +133,30 @@ Future<void> _bootstrap() async {
   );
 
   try {
-    windowManager.waitUntilReadyToShow(windowOptions, () async {
-      await windowManager.show();
-      await windowManager.focus();
+    await windowManager.ensureInitialized();
+    // `waitUntilReadyToShow` sólo devuelve el control tras aplicar todas las
+    // opciones, así que se espera con `await` para que cualquier error del
+    // canal nativo caiga en este `catch`.
+    await windowManager.waitUntilReadyToShow(windowOptions, () {
+      // El callback es `VoidCallback`: si se declarase `async` su Future se
+      // descartaría y un fallo de `show()`/`focus()` escaparía del try-catch
+      // (era la vía por la que se colaba el MissingPluginException).
+      unawaited(_showWindow());
     });
-  } catch (error) {
-    AppLog.warn('No se pudo configurar la ventana: $error');
+    AppLog.info('Ventana de escritorio configurada (${winW}x$winH)');
+  } catch (error, stack) {
+    AppLog.error('No se pudo configurar la ventana', error, stack);
   }
+}
 
-  AppLog.info('Ajustes cargados (ventana ${winW}x$winH)');
-  // AppBootstrap envuelve la app: si ocurre un error fatal, sustituye la
-  // interfaz por una pantalla de error con botón de reinicio en vez de dejar
-  // la pantalla en blanco (crítico en un kiosco sin teclado ni consola).
-  runApp(
-    AppBootstrap(
-      accentColor: settings.accentColor,
-      appBuilder: (key) => SmartDisplayApp(key: key, initialSettings: settings),
-    ),
-  );
+/// Muestra y enfoca la ventana; nunca propaga errores.
+Future<void> _showWindow() async {
+  try {
+    await windowManager.show();
+    await windowManager.focus();
+  } catch (error, stack) {
+    AppLog.error('No se pudo mostrar la ventana', error, stack);
+  }
 }
 
 /// Raíz de la app: guarda los ajustes para poder aplicar la tipografía a toda
@@ -263,8 +332,6 @@ class _SmartDisplayScreenState extends State<SmartDisplayScreen> {
   Timer? _idleTimer;
   Timer? _sunrisePreviewTimer;
   Timer? _windowResizeTimer;
-  String _timeString = "";
-  String _dateString = "";
 
   late AppSettings _currentSettings;
 
@@ -473,52 +540,17 @@ class _SmartDisplayScreenState extends State<SmartDisplayScreen> {
 
   void _updateTime() {
     final now = DateTime.now();
-    final hourValue = _settings.use24Hour
-        ? now.hour
-        : (now.hour % 12 == 0 ? 12 : now.hour % 12);
-    final h = hourValue.toString().padLeft(2, '0');
-    final m = now.minute.toString().padLeft(2, '0');
-    final s = now.second.toString().padLeft(2, '0');
-    final suffix = _settings.use24Hour ? "" : (now.hour < 12 ? " AM" : " PM");
-    final newTime = _settings.showSeconds ? "$h:$m:$s$suffix" : "$h:$m$suffix";
 
-    const weekdays = [
-      "Lunes",
-      "Martes",
-      "Miércoles",
-      "Jueves",
-      "Viernes",
-      "Sábado",
-      "Domingo",
-    ];
-    const months = [
-      "Enero",
-      "Febrero",
-      "Marzo",
-      "Abril",
-      "Mayo",
-      "Junio",
-      "Julio",
-      "Agosto",
-      "Septiembre",
-      "Octubre",
-      "Noviembre",
-      "Diciembre",
-    ];
-    final newDate =
-        "${weekdays[now.weekday - 1]}, ${now.day} de ${months[now.month - 1]}";
-
+    // La hora y la fecha ya no se calculan ni se guardan aquí: las pinta
+    // ClockText, que se repinta SOLO él (dentro de un RepaintBoundary) cada
+    // segundo, o cada minuto si no se muestran los segundos. Antes este tick
+    // llamaba a setState y reconstruía todo el panel (gradiente, tarjetas,
+    // badges) cada segundo, algo que en la Raspberry Pi 3B se nota mucho.
+    //
     // CORREGIDO: antes la alarma sólo sonaba si el tick caía exactamente en
     // el segundo 0 del minuto; si se perdía ese tick, no sonaba nunca.
     _checkAlarm(now);
     _checkSunrise(now);
-
-    if (newTime != _timeString || newDate != _dateString) {
-      setState(() {
-        _timeString = newTime;
-        _dateString = newDate;
-      });
-    }
   }
 
   /// Comprueba si debe sonar la alarma (programada o pospuesta).
@@ -725,13 +757,20 @@ class _SmartDisplayScreenState extends State<SmartDisplayScreen> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text(
-                    "🔊 Volumen y Apagado",
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 17,
-                      fontWeight: FontWeight.bold,
-                    ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: const [
+                      Icon(Icons.volume_up, color: Colors.white, size: 18),
+                      SizedBox(width: 8),
+                      Text(
+                        "Volumen y Apagado",
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
                   ),
                   IconButton(
                     icon: const Icon(Icons.close, color: Colors.grey, size: 20),
@@ -849,13 +888,20 @@ class _SmartDisplayScreenState extends State<SmartDisplayScreen> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text(
-                    "⏰ Alarma y Despertador",
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 17,
-                      fontWeight: FontWeight.bold,
-                    ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: const [
+                      Icon(Icons.alarm, color: Colors.white, size: 18),
+                      SizedBox(width: 8),
+                      Text(
+                        "Alarma y Despertador",
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
                   ),
                   IconButton(
                     icon: const Icon(Icons.close, color: Colors.grey, size: 20),
@@ -927,7 +973,7 @@ class _SmartDisplayScreenState extends State<SmartDisplayScreen> {
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text(
-                  "Simulador de Amanecer 🌅",
+                  "Simulador de Amanecer",
                   style: TextStyle(color: Colors.white, fontSize: 14),
                 ),
                 subtitle: Text(
@@ -976,13 +1022,20 @@ class _SmartDisplayScreenState extends State<SmartDisplayScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                "📍 Pronóstico · ${_settings.weatherLabel}",
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 17,
-                  fontWeight: FontWeight.bold,
-                ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.location_on, color: Colors.white, size: 18),
+                  const SizedBox(width: 8),
+                  Text(
+                    "Pronóstico · ${_settings.weatherLabel}",
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 17,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
               ),
               IconButton(
                 icon: const Icon(Icons.close, color: Colors.grey, size: 20),
@@ -1000,18 +1053,23 @@ class _SmartDisplayScreenState extends State<SmartDisplayScreen> {
             children:
                 (_weather?.forecast ??
                         [
-                          ForecastDay(day: 'Hoy', max: 24, min: 12, icon: '☀️'),
+                          ForecastDay(
+                            day: 'Hoy',
+                            max: 24,
+                            min: 12,
+                            icon: 'sunny',
+                          ),
                           ForecastDay(
                             day: 'Mañana',
                             max: 22,
                             min: 11,
-                            icon: '⛅',
+                            icon: 'partly',
                           ),
                           ForecastDay(
                             day: 'Pasado',
                             max: 25,
                             min: 13,
-                            icon: '☀️',
+                            icon: 'sunny',
                           ),
                         ])
                     .map((item) {
@@ -1038,10 +1096,7 @@ class _SmartDisplayScreenState extends State<SmartDisplayScreen> {
                               ),
                             ),
                             const SizedBox(height: 6),
-                            Text(
-                              item.icon,
-                              style: const TextStyle(fontSize: 26),
-                            ),
+                            WeatherIcon(item.icon, size: 26),
                             const SizedBox(height: 6),
                             Text(
                               "${item.max}°",
@@ -1154,11 +1209,12 @@ class _SmartDisplayScreenState extends State<SmartDisplayScreen> {
                             },
                             borderRadius: BorderRadius.circular(14),
                             child: buildBadge(
-                              "💤 Reposo",
+                              "Reposo",
                               cardBg,
                               cardBorder,
                               Colors.amberAccent,
                               11 * scale,
+                              Icons.bedtime,
                             ),
                           ),
                           const SizedBox(width: 8),
@@ -1171,11 +1227,12 @@ class _SmartDisplayScreenState extends State<SmartDisplayScreen> {
                             },
                             borderRadius: BorderRadius.circular(14),
                             child: buildBadge(
-                              night ? "☀️ Día" : "🌙 Noche",
+                              night ? "Día" : "Noche",
                               cardBg,
                               cardBorder,
                               textColor,
                               11 * scale,
+                              night ? Icons.wb_sunny : Icons.nightlight_round,
                             ),
                           ),
                           const SizedBox(width: 8),
@@ -1186,11 +1243,12 @@ class _SmartDisplayScreenState extends State<SmartDisplayScreen> {
                             },
                             borderRadius: BorderRadius.circular(14),
                             child: buildBadge(
-                              "⚙️ Ajustes",
+                              "Ajustes",
                               cardBg,
                               cardBorder,
                               textColor,
                               11 * scale,
+                              Icons.settings,
                             ),
                           ),
                         ],
@@ -1200,43 +1258,30 @@ class _SmartDisplayScreenState extends State<SmartDisplayScreen> {
 
                   // 2. Reloj Central
                   Expanded(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Flexible(
-                          child: FittedBox(
-                            fit: BoxFit.contain,
-                            child: Text(
-                              _timeString,
-                              style: TextStyle(
-                                fontSize:
-                                    _settings.clockFontSize *
-                                    (_settings.showSeconds ? 0.84 : 1.0),
-                                fontWeight: _clockWeight,
-                                color: textColor,
-                                letterSpacing: -2,
-                                shadows: [
-                                  Shadow(
-                                    color: currentAccent.withValues(
-                                      alpha: 0.35,
-                                    ),
-                                    blurRadius: 25,
-                                  ),
-                                ],
-                              ),
-                            ),
+                    child: ClockText(
+                      use24Hour: _settings.use24Hour,
+                      showSeconds: _settings.showSeconds,
+                      timeStyle: TextStyle(
+                        fontSize:
+                            _settings.clockFontSize *
+                            (_settings.showSeconds ? 0.84 : 1.0),
+                        fontWeight: _clockWeight,
+                        color: textColor,
+                        letterSpacing: -2,
+                        shadows: [
+                          Shadow(
+                            color: currentAccent.withValues(alpha: 0.35),
+                            blurRadius: 25,
                           ),
-                        ),
-                        if (_settings.showDate)
-                          Text(
-                            _dateString,
-                            style: TextStyle(
+                        ],
+                      ),
+                      dateStyle: _settings.showDate
+                          ? TextStyle(
                               fontSize: _settings.dateFontSize,
                               color: textMuted,
                               fontWeight: FontWeight.w300,
-                            ),
-                          ),
-                      ],
+                            )
+                          : null,
                     ),
                   ),
 
@@ -1270,23 +1315,42 @@ class _SmartDisplayScreenState extends State<SmartDisplayScreen> {
                                         letterSpacing: 1,
                                       ),
                                     ),
-                                    Text(
-                                      "Pronóstico ›",
-                                      style: TextStyle(
-                                        color: currentAccent,
-                                        fontSize: 10 * scale,
-                                        fontWeight: FontWeight.bold,
-                                      ),
+                                    Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          "Pronóstico",
+                                          style: TextStyle(
+                                            color: currentAccent,
+                                            fontSize: 10 * scale,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                        Icon(
+                                          Icons.chevron_right,
+                                          size: 12 * scale,
+                                          color: currentAccent,
+                                        ),
+                                      ],
                                     ),
                                   ],
                                 ),
-                                Text(
-                                  "${_weather?.temp ?? '--°C'} ${_weather?.icon ?? '☀️'}",
-                                  style: TextStyle(
-                                    color: textColor,
-                                    fontSize: 21 * scale,
-                                    fontWeight: FontWeight.w600,
-                                  ),
+                                Row(
+                                  children: [
+                                    Text(
+                                      _weather?.temp ?? '--°C',
+                                      style: TextStyle(
+                                        color: textColor,
+                                        fontSize: 21 * scale,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    SizedBox(width: 6 * scale),
+                                    WeatherIcon(
+                                      _weather?.icon ?? 'sunny',
+                                      size: 18 * scale,
+                                    ),
+                                  ],
                                 ),
                                 Text(
                                   _weather?.description ?? "Cargando clima...",
@@ -1434,14 +1498,26 @@ class _SmartDisplayScreenState extends State<SmartDisplayScreen> {
                                               color: Colors.white,
                                             ),
                                           )
-                                        : Text(
-                                            _radio.isPlaying
-                                                ? "⏹ Detener"
-                                                : "▶ Reproducir",
-                                            style: TextStyle(
-                                              fontSize: 12 * scale,
-                                              fontWeight: FontWeight.w600,
-                                            ),
+                                        : Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(
+                                                _radio.isPlaying
+                                                    ? Icons.stop_rounded
+                                                    : Icons.play_arrow_rounded,
+                                                size: 16 * scale,
+                                              ),
+                                              SizedBox(width: 6 * scale),
+                                              Text(
+                                                _radio.isPlaying
+                                                    ? "Detener"
+                                                    : "Reproducir",
+                                                style: TextStyle(
+                                                  fontSize: 12 * scale,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                            ],
                                           ),
                                   ),
                                 ),
@@ -1491,16 +1567,27 @@ class _SmartDisplayScreenState extends State<SmartDisplayScreen> {
                                     fontWeight: FontWeight.w600,
                                   ),
                                 ),
-                                Text(
-                                  _settings.sunriseEnabled
-                                      ? "Amanecer activo ›"
-                                      : "Normal ›",
-                                  style: TextStyle(
-                                    color: textMuted,
-                                    fontSize: 11 * scale,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
+                                Row(
+                                  children: [
+                                    Flexible(
+                                      child: Text(
+                                        _settings.sunriseEnabled
+                                            ? "Amanecer activo"
+                                            : "Normal",
+                                        style: TextStyle(
+                                          color: textMuted,
+                                          fontSize: 11 * scale,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    Icon(
+                                      Icons.chevron_right,
+                                      size: 13 * scale,
+                                      color: textMuted,
+                                    ),
+                                  ],
                                 ),
                               ],
                             ),
@@ -1565,9 +1652,10 @@ class _SmartDisplayScreenState extends State<SmartDisplayScreen> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text(
-                          _timeString,
-                          style: TextStyle(
+                        ClockText(
+                          use24Hour: _settings.use24Hour,
+                          showSeconds: _settings.showSeconds,
+                          timeStyle: TextStyle(
                             fontSize: _settings.clockFontSize * 0.8,
                             fontWeight: _clockWeight,
                             color: const Color(0xFF550A0A),
@@ -1597,14 +1685,21 @@ class _SmartDisplayScreenState extends State<SmartDisplayScreen> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const Text(
-                      "☀️ ¡BUENOS DÍAS!",
-                      style: TextStyle(
-                        color: Colors.amber,
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 2,
-                      ),
+                    const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.wb_sunny, color: Colors.amber, size: 26),
+                        SizedBox(width: 10),
+                        Text(
+                          "¡BUENOS DÍAS!",
+                          style: TextStyle(
+                            color: Colors.amber,
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 2,
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 10),
                     Text(
@@ -1731,13 +1826,20 @@ class _SunriseOverlayState extends State<_SunriseOverlay> {
       ),
       child: widget.preview
           ? const Center(
-              child: Text(
-                "🌅 Simulando Amanecer...",
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 22,
-                  fontWeight: FontWeight.w300,
-                ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.wb_twilight, color: Colors.white, size: 26),
+                  SizedBox(width: 10),
+                  Text(
+                    "Simulando Amanecer...",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w300,
+                    ),
+                  ),
+                ],
               ),
             )
           : null,

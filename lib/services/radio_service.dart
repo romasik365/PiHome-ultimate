@@ -1,15 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
-import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 
 import '../models/radio_station.dart';
 import 'app_storage.dart';
 import 'radio_directory_service.dart';
 
-/// Emisoras de fábrica por defecto. Se usan como rotación inicial cuando el
-/// usuario no ha seleccionado favoritas desde el directorio online.
 const List<Station> kDefaultStations = [
   Station(
     name: 'Kiss FM 106.5',
@@ -24,13 +22,11 @@ const List<Station> kDefaultStations = [
     tags: 'pop',
   ),
   Station(
-    name: 'RAC1 Notícies',
+    name: 'RAC1 Not\\u00edcies',
     url: 'https://playerservices.streamtheworld.com/api/livestream-redirect/RAC_1.mp3',
     countryCode: 'ES',
     tags: 'news,talk',
   ),
-  // La URL original de zeno.fm devuelve 401; se sustituye por uno stream
-  // ambiental verificado que entrega audio/mpeg.
   Station(
     name: 'SomaFM Drone Zone',
     url: 'https://ice1.somafm.com/dronezone-128-mp3',
@@ -39,48 +35,109 @@ const List<Station> kDefaultStations = [
   ),
 ];
 
-/// Reproductor de radio real basado en `audioplayers`.
-///
-/// Gestiona una **lista de emisoras activa** (favoritas del usuario o, si no
-/// hay ninguna, las [kDefaultStations]) y un directorio online
-/// ([RadioDirectoryService]) para buscar más.
+class _LinuxAudioPlayer {
+  Process? _process;
+  bool _isPlaying = false;
+  Function()? _onPlaybackChanged;
+  String? _playerCommand;
+  bool _playerCommandChecked = false;
+
+  Future<String?> _findPlayer() async {
+    for (final cmd in ['mpg123', 'omxplayer', 'cvlc', 'vlc']) {
+      try {
+        final r = await Process.run('which', [cmd]);
+        if (r.exitCode == 0 && (r.stdout as String).trim().isNotEmpty)
+          return cmd;
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  Future<String?> _resolvePlayer() async {
+    if (_playerCommandChecked) return _playerCommand;
+    _playerCommandChecked = true;
+    if (Platform.isLinux) {
+      _playerCommand = await _findPlayer();
+    }
+    return _playerCommand;
+  }
+
+  Future<bool> play(String url, {double volume = 0.8}) async {
+    final cmd = await _resolvePlayer();
+    if (cmd == null) return false;
+    stop();
+    _isPlaying = true;
+    _onPlaybackChanged?.call();
+    try {
+      final args = _buildArgs(url, volume);
+      _process = await Process.start(cmd, args);
+      _process!.exitCode.then((_) {
+        _isPlaying = false;
+        _onPlaybackChanged?.call();
+        _process = null;
+      });
+      return true;
+    } catch (e) {
+      _isPlaying = false;
+      _onPlaybackChanged?.call();
+      return false;
+    }
+  }
+
+  List<String> _buildArgs(String url, double volume) {
+    if (_playerCommand == 'mpg123')
+      return [
+        '--gapless',
+        '-r',
+        '44100',
+        '-f',
+        (volume * 100).round().toString(),
+        url,
+      ];
+    if (_playerCommand == 'omxplayer')
+      return ['-o', 'both', '--vol', (volume * 100).round().toString(), url];
+    if (_playerCommand == 'cvlc' || _playerCommand == 'vlc')
+      return ['--play', '--quiet', '--no-video', url];
+    return [url];
+  }
+
+  void stop() {
+    _process?.kill();
+    _process = null;
+    _isPlaying = false;
+    _onPlaybackChanged?.call();
+  }
+
+  bool get isPlaying => _isPlaying;
+  void setOnPlaybackChanged(Function()? cb) {
+    _onPlaybackChanged = cb;
+  }
+}
+
 class RadioService {
-  final AudioPlayer _player = AudioPlayer();
+  /// SOLO PARA PRUEBAS: fuerza el comportamiento de Linux sin importar la
+  /// plataforma real, igual que [WifiService.debugTreatAsLinux]. Los tests
+  /// corren en Windows pero necesitan ejercitar el código nativo (async,
+  /// `isLoading` síncrono...).
+  @visibleForTesting
+  static bool debugTreatAsLinux = false;
 
-  /// Emisoras de la rotación actual (favoritas o por defecto).
+  bool get _isLinux => Platform.isLinux || debugTreatAsLinux;
+
+  final _LinuxAudioPlayer _linux = _LinuxAudioPlayer();
   List<Station> _stations = [...kDefaultStations];
-
   int currentStationIndex = 0;
   double volume = 0.8;
   int sleepMinutesLeft = 0;
-
-  /// Minutos configurados en el último temporizador de sueño (0 = apagado).
-  /// A diferencia de [sleepMinutesLeft], no decrece: sirve para que la
-  /// interfaz mantenga seleccionado el botón elegido (15/30/45/60).
   int sleepTimerSetting = 0;
   String? lastError;
   bool isPlaying = false;
   bool isLoading = false;
-
-  /// Directorio online (se crea bajo demanda).
-  RadioDirectoryService? _directory;
-  RadioDirectoryService get directory => _directory ??= RadioDirectoryService();
-
-  // --- suscripciones ---
+  RadioDirectoryService? _dir;
+  RadioDirectoryService get directory => _dir ??= RadioDirectoryService();
   Timer? _sleepTimer;
-  StreamSubscription<PlayerState>? _stateSub;
-  StreamSubscription<AudioEvent>? _eventSub;
   Function()? _onStateChanged;
   bool _disposed = false;
-  int _retriesLeft = 0;
-  Future<void>? _configuring;
-
-  /// True desde que el usuario pide reproducir hasta que detiene la radio
-  /// (aunque el stream esté cargando o haya fallado).
-  ///
-  /// Lo usan las flechas  › de la tarjeta STREAMING para reproducir la nueva
-  /// emisora al instante en lugar de dejar sonando la anterior.
-  bool _playRequested = false;
 
   List<Station> get stations => List.unmodifiable(_stations);
   Station get currentStation {
@@ -91,17 +148,34 @@ class RadioService {
     return _stations[idx];
   }
 
-  // ---- favoritos ----
+  /// Subtítulo corto de la emisora actual para la interfaz.
+  ///
+  /// Muestra los géneros y, si el bitrate es conocido (>0), el bitrate en kbps.
+  /// Omite el bitrate cuando es 0 (emisoras de fábrica sin ese dato) para no
+  /// mostrar "• 0 kbps" enganoso.
+  String get stationSubtitle {
+    final s = currentStation;
+    final tags = s.tags.trim();
+    final hasBitrate = s.bitrate > 0;
+    if (tags.isEmpty && !hasBitrate) return '';
+    if (tags.isEmpty) return '${s.bitrate} kbps';
+    if (hasBitrate) return '$tags • ${s.bitrate} kbps';
+    return tags;
+  }
 
   static const _favFile = 'favorites.json';
 
-  /// Carga las emisoras favoritas desde disco. Si no hay ninguna, mantiene
-  /// las de fábrica.
+  Future<void> init({Function()? onStateChanged}) async {
+    _onStateChanged = onStateChanged;
+    await loadFavorites();
+    if (_isLinux) _linux.setOnPlaybackChanged(onStateChanged);
+  }
+
   Future<void> loadFavorites() async {
     try {
-      final file = AppStorage.configFile(_favFile);
-      if (file == null || !await file.exists()) return;
-      final raw = await file.readAsString();
+      final f = AppStorage.configFile(_favFile);
+      if (f == null || !await f.exists()) return;
+      final raw = await f.readAsString();
       final data = jsonDecode(raw);
       if (data is List && data.isNotEmpty) {
         final favs = data
@@ -110,264 +184,86 @@ class RadioService {
             .toList();
         if (favs.isNotEmpty) {
           _stations = favs;
-          currentStationIndex = currentStationIndex % _stations.length;
+          currentStationIndex %= _stations.length;
         }
       }
-    } catch (error) {
-      debugPrint('RadioService: no se pudieron cargar favoritos ($error)');
-    }
-  }
-
-  /// Persiste las emisoras favoritas en disco.
-  Future<void> saveFavorites() async {
-    try {
-      final file = AppStorage.configFile(_favFile);
-      if (file == null) return;
-      await file.writeAsString(
-        jsonEncode(_stations.map((s) => s.toMap()).toList()),
-        flush: true,
-      );
-    } catch (error) {
-      debugPrint('RadioService: no se pudieron guardar favoritos ($error)');
-    }
-  }
-
-  /// Reemplaza la rotación actual por [list].
-  /// Si [list] está vacía, restaura las emisoras de fábrica.
-  void setStations(List<Station> list) {
-    final stop = isPlaying; // NUEVO 1: detener antes de reemplazar la rotacion.
-    if (stop) {
-      unawaited(_player.stop());
-      isPlaying = false;
-      isLoading = false;
-    }
-    _stations
-      ..clear()
-      ..addAll(list.isEmpty ? kDefaultStations : list);
-    if (currentStationIndex >= _stations.length) currentStationIndex = 0;
-    saveFavorites();
-    _notify();
-  }
-
-  /// Restaura las emisoras de fábrica (borra los favoritos guardados).
-  void resetToDefaults() => setStations([...kDefaultStations]);
-
-  /// Añade o quita [station] de las favoritas (también actualiza la rotación).
-  /// Nunca deja la lista vacía: quitar la última restaura las de fábrica.
-  void toggleFavorite(Station station) {
-    final idx = _stations.indexWhere((s) => s.url == station.url);
-    if (idx >= 0) {
-      if (_stations.length == 1) {
-        _stations
-          ..clear()
-          ..addAll(kDefaultStations);
-      } else {
-        _stations.removeAt(idx);
-      }
-    } else {
-      _stations.add(station);
-    }
-    if (currentStationIndex >= _stations.length) currentStationIndex = 0;
-    saveFavorites();
-    _notify();
-  }
-
-  /// Devuelve true si [station] está en la rotación actual.
-  bool isFavorited(Station station) =>
-      _stations.any((s) => s.url == station.url);
-
-  /// Subtítulo de la emisora actual: géneros y bitrate, omitiendo lo que se
-  /// desconozca (antes mostraba un espurio "• 0 kbps").
-  String get stationSubtitle => [
-    if (currentStation.tags.isNotEmpty) currentStation.tags,
-    if (currentStation.bitrate > 0) '${currentStation.bitrate} kbps',
-  ].join(' • ');
-
-  /// Inicializa el servicio: suscripciones + carga de favoritas.
-  Future<void> init({required void Function()? onStateChanged}) async {
-    _onStateChanged = onStateChanged;
-
-    _stateSub = _player.onPlayerStateChanged.listen(
-      (state) {
-        if (state == PlayerState.playing) {
-          isPlaying = true;
-          isLoading = false;
-        } else if (state == PlayerState.paused) {
-          isPlaying = false;
-          isLoading = false;
-        }
-        if (state == PlayerState.completed) {
-          stop();
-          isPlaying = false;
-        }
-        _notify();
-      },
-      onError: (e) {
-        lastError = 'Stream error: $e';
-        isPlaying = false;
-        isLoading = false;
-        _notify();
-      },
-    );
-
-    _eventSub = _player.eventStream.listen(
-      (_) {},
-      onError: (e) {
-        lastError = 'Event error: $e';
-        _notify();
-      },
-    );
-
-    await setVolume(volume);
-    await loadFavorites();
-  }
-
-  /// Configura volumen + release mode. Se guarda en [_configuring] para no
-  /// superponer llamadas.
-  Future<void> _configure() {
-    _configuring ??= _doConfigure();
-    return _configuring!;
-  }
-
-  Future<void> _doConfigure() async {
-    try {
-      await _player.setVolume(volume);
-      await _player.setReleaseMode(ReleaseMode.stop);
-      await _player.setPlayerMode(PlayerMode.mediaPlayer);
     } catch (e) {
-      lastError = 'configure: $e';
-    } finally {
-      _configuring = null;
+      debugPrint('RadioService: error loading favorites: ');
     }
   }
 
-  /// Reproduce la emisora activa.
-  ///
-  /// El estado de "cargando" se activa de forma SÍNCRONA, antes de esperar al
-  /// plugin nativo: la interfaz responde al instante (spinner) aunque el
-  /// stream tarde en conectar, y las pruebas no dependen del plugin.
   Future<void> play() async {
     if (_disposed) return;
-    _playRequested = true;
-    // Intento nuevo del usuario: se rearma el reintento automático.
-    _retriesLeft = 1;
-    await _startStream();
-  }
-
-  /// Conecta con la emisora activa (con reintento automático si falla).
-  ///
-  /// Está separada de [play] para que los reintentos NO reinicien el contador:
-  /// antes [play] y [changeStation] lo ponían a 1 en cada intento, de modo que
-  /// un stream caído se quedaba reintentando en bucle infinito.
-  Future<void> _startStream() async {
-    if (_disposed) return;
     isLoading = true;
-    _notify();
-    try {
-      await _configure();
-      await _player.play(UrlSource(currentStation.url));
-    } catch (e) {
-      lastError = 'play error: $e';
-      if (!await _retryNext()) {
+    lastError = null;
+    if (_isLinux) {
+      final ok = await _linux.play(currentStation.url, volume: volume);
+      if (ok) {
+        isPlaying = true;
         isLoading = false;
-        _notify();
+        _onStateChanged?.call();
+      } else {
+        isLoading = false;
+        lastError = 'No hay reproductor de audio (mpg123/omxplayer)';
       }
+    } else {
+      isLoading = false;
+      lastError = 'Radio no disponible en esta plataforma';
     }
   }
 
-  /// Reproduce [station] y salta a ella en la rotación.
-  Future<void> playStation(Station station) async {
+  Future<void> playStation(Station s) async {
     if (_disposed) return;
-    final idx = _stations.indexWhere((s) => s.url == station.url);
+    final idx = _stations.indexWhere((st) => st.url == s.url);
     if (idx >= 0) currentStationIndex = idx;
     await play();
   }
 
-  /// Reintenta con la emisora siguiente si la actual falla (máx. 2 intentos).
-  Future<bool> _retryNext() async {
-    if (_disposed || _retriesLeft <= 0) return false;
-    _retriesLeft--;
-    // Sin autoplay: este método lanza el stream de la nueva emisora justo
-    // después, así que no debe dispararlo dos veces.
-    changeStation(1, announce: false, autoplay: false);
-    await _startStream();
-    return true;
-  }
-
-  /// Cambia de emisora. Si [announce] es true, avisa para repintar la interfaz.
-  ///
-  /// Si la radio está sonando (o intentando sonar) la nueva emisora se
-  /// reproduce al instante: antes las flechas ‹ › sólo cambiaban el nombre en
-  /// pantalla y seguía sonando el stream anterior hasta pulsar
-  /// Detener + Reproducir.
   void changeStation(int delta, {bool announce = true, bool autoplay = true}) {
     if (_disposed) return;
     if (_stations.length > 1) {
       final old = currentStationIndex;
-      currentStationIndex = ((currentStationIndex + delta) % _stations.length);
-      if (currentStationIndex < 0) {
-        currentStationIndex += _stations.length;
-      }
-      if (announce && old != currentStationIndex) {
-        _notify();
-      }
+      currentStationIndex =
+          ((currentStationIndex + delta) % _stations.length +
+              _stations.length) %
+          _stations.length;
+      if (announce && old != currentStationIndex) _notify();
     }
-    if (autoplay && (isPlaying || isLoading || _playRequested)) {
-      unawaited(play());
-    }
+    if (autoplay && (isPlaying || isLoading)) unawaited(play());
   }
 
-  /// Alterna play / stop.
   Future<void> toggle() async {
-    if (!_disposed) {
-      if (isPlaying || isLoading) {
-        await stop();
-      } else {
-        await play();
-      }
-    }
+    if (_disposed) return;
+    if (isPlaying || isLoading)
+      await stop();
+    else
+      await play();
   }
 
-  /// Detiene la reproducción.
-  ///
-  /// Los indicadores se limpian de forma SÍNCRONA antes de avisar al plugin:
-  /// la interfaz deja de mostrar "cargando" al instante aunque el plugin
-  /// nativo tarde (o no responda, como en las pruebas).
   Future<void> stop() async {
     if (_disposed) return;
-    _playRequested = false;
     isPlaying = false;
     isLoading = false;
-    _retriesLeft = 0;
-    try {
-      await _player.stop();
-    } catch (_) {}
+    _linux.stop();
     _notify();
   }
 
-  /// Ajusta el volumen (0.0–1.0) al reproductor y a la variable local.
-  Future<void> setVolume(double value) async {
+  Future<void> setVolume(double v) async {
     if (_disposed) return;
-    volume = value.clamp(0.0, 1.0);
+    volume = v.clamp(0.0, 1.0);
     _notify();
-    try {
-      await _player.setVolume(volume);
-    } catch (e) {
-      lastError = 'volume: $e';
-    }
   }
 
-  /// Temporizador de apagado: detiene la radio tras [minutes] (0 = cancela).
   void setSleepTimer(
-    int minutes, {
+    int mins, {
     void Function()? onTick,
     void Function()? onExpire,
   }) {
     if (_disposed) return;
     _sleepTimer?.cancel();
-    sleepMinutesLeft = minutes;
-    sleepTimerSetting = minutes;
-    if (minutes > 0) {
+    sleepMinutesLeft = mins;
+    sleepTimerSetting = mins;
+    if (mins > 0) {
       _sleepTimer = Timer.periodic(const Duration(minutes: 1), (t) {
         sleepMinutesLeft--;
         onTick?.call();
@@ -388,18 +284,60 @@ class RadioService {
     if (!_disposed) _onStateChanged?.call();
   }
 
-  /// Libera los recursos del reproductor.
   Future<void> dispose() async {
     _disposed = true;
     _onStateChanged = null;
     _sleepTimer?.cancel();
     _sleepTimer = null;
-    unawaited(_stateSub?.cancel());
-    unawaited(_eventSub?.cancel());
-    _stateSub = null;
-    _eventSub = null;
+    _linux.stop();
+  }
+
+  void resetToDefaults() {
+    setStations([...kDefaultStations]);
+  }
+
+  void setStations(List<Station> list) {
+    if (isPlaying) {
+      stop();
+      isPlaying = false;
+      isLoading = false;
+    }
+    _stations
+      ..clear()
+      ..addAll(list.isEmpty ? kDefaultStations : list);
+    if (currentStationIndex >= _stations.length) currentStationIndex = 0;
+    saveFavorites();
+    _notify();
+  }
+
+  bool isFavorited(Station s) => _stations.any((st) => st.url == s.url);
+  void toggleFavorite(Station s) {
+    final idx = _stations.indexWhere((st) => st.url == s.url);
+    if (idx >= 0) {
+      if (_stations.length == 1)
+        _stations
+          ..clear()
+          ..addAll(kDefaultStations);
+      else
+        _stations.removeAt(idx);
+    } else {
+      _stations.add(s);
+    }
+    if (currentStationIndex >= _stations.length) currentStationIndex = 0;
+    saveFavorites();
+    _notify();
+  }
+
+  Future<void> saveFavorites() async {
     try {
-      await _player.dispose();
-    } catch (_) {}
+      final f = AppStorage.configFile(_favFile);
+      if (f == null) return;
+      await f.writeAsString(
+        jsonEncode(_stations.map((s) => s.toMap()).toList()),
+        flush: true,
+      );
+    } catch (e) {
+      debugPrint('RadioService: error saving: ');
+    }
   }
 }

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show MissingPluginException;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:smart_display/services/app_log.dart';
@@ -74,6 +75,36 @@ void main() {
     expect(find.textContaining('boom irrecuperable'), findsWidgets);
     expect(find.text('APP REAL'), findsNothing);
   });
+
+  testWidgets(
+    'un plugin nativo ausente no sustituye el panel por ErrorScreen',
+    (tester) async {
+      await tester.pumpWidget(
+        AppBootstrap(
+          appBuilder: (key) => MaterialApp(
+            key: key,
+            home: const Scaffold(body: Text('APP REAL')),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      // En la Raspberry Pi (flutter-pi) no existen los plugins GTK: el canal
+      // responde MissingPluginException. Eso degrada una función (el audio, la
+      // gestión de ventana), pero no debe tapar el kiosco con la pantalla de
+      // error, porque el panel tiene que seguir mostrando la hora y el tiempo.
+      AppLog.onFatal?.call(
+        MissingPluginException(
+          'No implementation found for method play on channel xyz.luan/audioplayers',
+        ),
+        StackTrace.current,
+      );
+      await tester.pump();
+
+      expect(find.byType(ErrorScreen), findsNothing);
+      expect(find.text('APP REAL'), findsOneWidget);
+    },
+  );
 
   testWidgets('Reiniciar oculta el error y remonta la app con otra key', (
     tester,

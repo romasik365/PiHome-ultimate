@@ -119,10 +119,10 @@ void main() {
     expect(find.text('CLIMA'), findsOneWidget);
     expect(find.text('STREAMING'), findsOneWidget);
     expect(find.text('ALARMA'), findsOneWidget);
-    expect(find.text('⚙️ Ajustes'), findsOneWidget);
-    expect(find.text('🌙 Noche'), findsOneWidget);
-    expect(find.text('💤 Reposo'), findsOneWidget);
-    expect(find.text('📍 Guissona, Lleida'), findsOneWidget);
+    expect(find.text('Ajustes'), findsOneWidget);
+    expect(find.text('Noche'), findsOneWidget);
+    expect(find.text('Reposo'), findsOneWidget);
+    expect(find.text('Guissona, Lleida'), findsOneWidget);
 
     // El clima mockeado llega a la tarjeta.
     expect(find.textContaining('21°C'), findsOneWidget);
@@ -134,7 +134,7 @@ void main() {
   testWidgets('el badge de noche notifica el cambio de modo', (tester) async {
     final changes = await pumpMain(tester);
 
-    await tester.tap(find.text('🌙 Noche'), warnIfMissed: false);
+    await tester.tap(find.text('Noche'), warnIfMissed: false);
     await tester.pump();
 
     expect(changes, isNotEmpty);
@@ -148,7 +148,7 @@ void main() {
   ) async {
     await pumpMain(tester);
 
-    await tester.tap(find.text('💤 Reposo'), warnIfMissed: false);
+    await tester.tap(find.text('Reposo'), warnIfMissed: false);
     await tester.pump();
     expect(find.text('Toca para despertar'), findsOneWidget);
 
@@ -184,7 +184,7 @@ void main() {
 
     await tester.tap(find.text('ALARMA'), warnIfMissed: false);
     await tester.pump(const Duration(milliseconds: 500));
-    expect(find.text('⏰ Alarma y Despertador'), findsOneWidget);
+    expect(find.text('Alarma y Despertador'), findsOneWidget);
 
     await tester.tap(find.byIcon(Icons.close), warnIfMissed: false);
     await tester.pump(const Duration(milliseconds: 500));
@@ -219,7 +219,7 @@ void main() {
 
     await tester.tap(find.byIcon(Icons.volume_up), warnIfMissed: false);
     await tester.pump(const Duration(milliseconds: 500));
-    expect(find.text('🔊 Volumen y Apagado'), findsOneWidget);
+    expect(find.text('Volumen y Apagado'), findsOneWidget);
 
     await tester.tap(find.text('30 m'), warnIfMissed: false);
     await tester.pump();
@@ -240,19 +240,19 @@ void main() {
   ) async {
     await pumpMain(tester);
 
-    await tester.tap(find.text('▶ Reproducir'), warnIfMissed: false);
+    await tester.tap(find.text('Reproducir'), warnIfMissed: false);
     await tester.pump();
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
     expect(tester.takeException(), isNull);
     await unmount(tester);
   });
 
-  testWidgets('⚙️ Ajustes navega a la pantalla de ajustes y vuelve', (
+  testWidgets('Ajustes navega a la pantalla de ajustes y vuelve', (
     tester,
   ) async {
     await pumpMain(tester);
 
-    await tester.tap(find.text('⚙️ Ajustes'), warnIfMissed: false);
+    await tester.tap(find.text('Ajustes'), warnIfMissed: false);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 600));
     expect(find.text('Tipografía'), findsOneWidget);

@@ -45,10 +45,17 @@ void main() {
   });
 
   setUp(() {
-    // Cada prueba empieza sin favoritos guardados.
+    // Cada prueba empieza sin favoritos guardados + modo Linux forzado:
+    // los tests corren en Windows, pero el código nativo (async) debe
+    // ejercitarse como en la Pi (Platform.isLinux = true simulado).
     try {
       if (favFile != null && favFile!.existsSync()) favFile!.deleteSync();
     } catch (_) {}
+    RadioService.debugTreatAsLinux = true;
+  });
+
+  tearDown(() {
+    RadioService.debugTreatAsLinux = false;
   });
 
   group('rotación de emisoras', () {

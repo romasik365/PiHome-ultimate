@@ -496,7 +496,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                _miniCard('CLIMA', '18°C ☀️', d.cardTextScale),
+                _miniCard(
+                  'CLIMA',
+                  '18°C',
+                  d.cardTextScale,
+                  icon: Icons.wb_sunny,
+                ),
                 _miniCard('STREAMING', 'Kiss FM', d.cardTextScale),
                 _miniCard('ALARMA', '07:00', d.cardTextScale),
               ],
@@ -507,7 +512,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _miniCard(String title, String value, double scale) {
+  Widget _miniCard(String title, String value, double scale, {IconData? icon}) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -519,9 +524,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
             letterSpacing: 1,
           ),
         ),
-        Text(
-          value,
-          style: TextStyle(fontSize: 12 * scale, fontWeight: FontWeight.w600),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              value,
+              style: TextStyle(
+                fontSize: 12 * scale,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            if (icon != null) ...[
+              const SizedBox(width: 4),
+              Icon(icon, size: 12 * scale, color: const Color(0xFFFFC107)),
+            ],
+          ],
         ),
       ],
     );
@@ -1093,7 +1110,7 @@ class _WeatherBodyState extends State<_WeatherBody> {
         longitude: p.longitude,
         timezone: p.timezone ?? 'Europe/Madrid',
         weatherLabel: p.name,
-        locationLabel: '📍 ${p.name}',
+        locationLabel: p.name,
       ),
     );
     FocusScope.of(context).unfocus();
@@ -1199,7 +1216,7 @@ class _WeatherBodyState extends State<_WeatherBody> {
                     longitude: (m['lon'] as num).toDouble(),
                     timezone: '${m['tz']}',
                     weatherLabel: '${m['label']}',
-                    locationLabel: '📍 ${m['label']}',
+                    locationLabel: AppSettings.sanitizeLabel('${m['label']}'),
                   ),
                 );
               },
@@ -2148,6 +2165,7 @@ class _BluetoothBodyState extends State<_BluetoothBody> {
   List<BluetoothDevice>? _devices;
   bool _scanning = false;
   String? _connecting;
+  String? _error;
 
   @override
   void initState() {
@@ -2158,6 +2176,7 @@ class _BluetoothBodyState extends State<_BluetoothBody> {
   Future<void> _scan() async {
     setState(() {
       _scanning = true;
+      _error = null;
     });
     try {
       final devs = await widget.btService.scan();
@@ -2167,8 +2186,13 @@ class _BluetoothBodyState extends State<_BluetoothBody> {
           _scanning = false;
         });
       }
-    } catch (_) {
-      if (mounted) setState(() => _scanning = false);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _scanning = false;
+          _error = widget.btService.lastError ?? e.toString();
+        });
+      }
     }
   }
 
@@ -2190,10 +2214,33 @@ class _BluetoothBodyState extends State<_BluetoothBody> {
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('Conectado a ${dev.name}')));
     } else {
+      final motivo = widget.btService.lastError;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al conectar a ${dev.name}')),
+        SnackBar(
+          content: Text(
+            motivo == null
+                ? 'Error al conectar a ${dev.name}'
+                : 'Error al conectar a ${dev.name}: $motivo',
+          ),
+        ),
       );
     }
+  }
+
+  Future<void> _disconnectDevice(BluetoothDevice dev) async {
+    setState(() => _connecting = dev.mac);
+    final ok = await widget.btService.disconnect(dev.mac);
+    if (!mounted) return;
+    setState(() => _connecting = null);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ok
+              ? '${dev.name} desconectado'
+              : 'No se pudo desconectar ${dev.name}',
+        ),
+      ),
+    );
   }
 
   @override
@@ -2204,16 +2251,22 @@ class _BluetoothBodyState extends State<_BluetoothBody> {
         SwitchListTile(
           title: const Text('Bluetooth activado'),
           value: d.bluetoothEnabled,
-          onChanged: (v) {
+          onChanged: (v) async {
             widget.apply(d.copyWith(bluetoothEnabled: v));
-            widget.btService.toggle(v);
-            if (v) _scan();
+            await widget.btService.toggle(v);
+            if (v && mounted) _scan();
           },
         ),
         if (d.bluetoothEnabled) ...[
           ListTile(
             leading: const Icon(Icons.search),
             title: const Text('Buscar dispositivos'),
+            subtitle: widget.btService.lastError == null
+                ? null
+                : Text(
+                    widget.btService.lastError!,
+                    style: const TextStyle(color: Colors.red, fontSize: 12),
+                  ),
             onTap: _scanning ? null : _scan,
             trailing: _scanning
                 ? const SizedBox(
@@ -2221,30 +2274,66 @@ class _BluetoothBodyState extends State<_BluetoothBody> {
                     height: 20,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : null,
+                : const Icon(Icons.chevron_right),
           ),
-          if (_devices != null)
-            ..._devices!.map((dev) {
-              final isPaired = d.pairedBluetoothIds.contains(dev.mac);
-              return ListTile(
-                leading: Icon(
-                  isPaired ? Icons.bluetooth_connected : Icons.bluetooth,
-                  color: isPaired ? Colors.blue : null,
-                ),
-                title: Text(dev.name),
-                subtitle: Text(dev.mac + (isPaired ? '  ·  Emparejado' : '')),
-                trailing: _connecting == dev.mac
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
+          if (_error != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Text(
+                'Error: $_error',
+                style: const TextStyle(color: Colors.red, fontSize: 12),
+              ),
+            ),
+          if (_devices != null && _devices!.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Text(
+                'No hay dispositivos conocidos. Pon los auriculares o el altavoz '
+                'en modo de emparejamiento y vuelve a buscar.',
+                style: TextStyle(fontSize: 12),
+              ),
+            ),
+          ...(_devices ?? const []).map((dev) {
+            final isPaired =
+                dev.paired || d.pairedBluetoothIds.contains(dev.mac);
+            return ListTile(
+              leading: Icon(
+                dev.connected
+                    ? Icons.bluetooth_connected
                     : isPaired
-                    ? const Icon(Icons.check_circle, color: Colors.blue)
+                    ? Icons.bluetooth
+                    : Icons.bluetooth_searching,
+                color: dev.connected
+                    ? Colors.green
+                    : isPaired
+                    ? Colors.blue
                     : null,
-                onTap: isPaired ? null : () => _connectDevice(dev),
-              );
-            }),
+              ),
+              title: Text(dev.name),
+              subtitle: Text(
+                '${dev.mac}  ·  '
+                '${dev.connected
+                    ? "Conectado"
+                    : isPaired
+                    ? "Emparejado"
+                    : "Nuevo"}',
+              ),
+              trailing: _connecting == dev.mac
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : dev.connected
+                  ? const Icon(Icons.link_off, color: Colors.redAccent)
+                  : const Icon(Icons.link, color: Colors.blue),
+              onTap: _connecting == dev.mac
+                  ? null
+                  : () => dev.connected
+                        ? _disconnectDevice(dev)
+                        : _connectDevice(dev),
+            );
+          }),
         ],
         const SizedBox(height: 24),
       ],

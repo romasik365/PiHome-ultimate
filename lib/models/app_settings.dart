@@ -183,6 +183,39 @@ class AppSettings {
   /// carga es muy rápida). Se respeta aunque las cargas terminen antes.
   final int bootMinDurationMs;
 
+  /// Quita de una etiqueta los emojis/pictogramas heredados.
+  ///
+  /// Los ajustes guardados antes de la correccion empezaban por un pin (emoji
+  /// de ubicacion) y en la Raspberry Pi ese caracter no existe en ninguna
+  /// fuente del sistema: se veia un cuadradito delante del nombre. La interfaz
+  /// ya pone el icono con MaterialIcons, asi que la etiqueta se guarda limpia.
+  /// Se conservan los acentos, el grado, el punto medio y la puntuacion
+  /// tipografica, y tambien los alfabetos no latinos (cirilico, griego,
+  /// arabe, CJK) porque pueden formar parte de un nombre de lugar.
+  static String sanitizeLabel(String raw) {
+    final buffer = StringBuffer();
+    for (final rune in raw.runes) {
+      if (_isPictograph(rune)) continue;
+      buffer.writeCharCode(rune);
+    }
+    return buffer.toString().replaceAll(RegExp(r"\s+"), " ").trim();
+  }
+
+  /// ¿El punto de codigo es un pictograma (emoji, flecha, simbolo o su
+  /// selector de variacion)? Son los unicos que el kiosco no puede dibujar.
+  static bool _isPictograph(int rune) {
+    const arrowsAndSymbols = 0x2190; // flechas, simbolos, dingbats, emoji BMP
+    const symbolsEnd = 0x2BFF;
+    const variationStart = 0xFE00; // selectores de variacion
+    const variationEnd = 0xFE0F;
+    const emojiStart = 0x1F000; // emoji (plano suplementario)
+    const emojiEnd = 0x1FAFF;
+    return (rune >= arrowsAndSymbols && rune <= symbolsEnd) ||
+        (rune >= variationStart && rune <= variationEnd) ||
+        (rune >= emojiStart && rune <= emojiEnd) ||
+        rune == 0x20E3; // keycap
+  }
+
   factory AppSettings.defaults() => AppSettings(
     accentColor: const Color(0xFF6366F1),
     nightMode: false,
@@ -195,7 +228,7 @@ class AppSettings {
     cardTextScale: 1.0,
     cardHeight: 116,
     clockWeight: 200,
-    locationLabel: '📍 Guissona, Lleida',
+    locationLabel: 'Guissona, Lleida',
     weatherLabel: 'Guissona',
     latitude: 41.785,
     longitude: 1.289,
@@ -433,7 +466,7 @@ class AppSettings {
       cardTextScale: dbl('cardScale', d.cardTextScale),
       cardHeight: dbl('cardH', d.cardHeight),
       clockWeight: integer('weight', d.clockWeight),
-      locationLabel: text('loc', d.locationLabel),
+      locationLabel: sanitizeLabel(text('loc', d.locationLabel)),
       weatherLabel: text('wlabel', d.weatherLabel),
       latitude: dbl('lat', d.latitude),
       longitude: dbl('lon', d.longitude),

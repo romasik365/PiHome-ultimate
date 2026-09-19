@@ -49,7 +49,7 @@ void main() {
       showDate: false,
       use24Hour: false,
       nightMode: true,
-      locationLabel: "📍 Lleida",
+      locationLabel: "Lleida",
       weatherLabel: 'Lleida',
       latitude: 41.6176,
       longitude: 0.62,
@@ -78,7 +78,7 @@ void main() {
     expect(restored.showDate, isFalse);
     expect(restored.use24Hour, isFalse);
     expect(restored.nightMode, isTrue);
-    expect(restored.locationLabel, "📍 Lleida");
+    expect(restored.locationLabel, "Lleida");
     expect(restored.weatherLabel, 'Lleida');
     expect(restored.latitude, 41.6176);
     expect(restored.longitude, 0.62);

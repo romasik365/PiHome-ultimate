@@ -105,7 +105,7 @@ void main() {
     expect(find.text('CLIMA'), findsOneWidget);
     expect(find.text('STREAMING'), findsOneWidget);
     expect(find.text('ALARMA'), findsOneWidget);
-    expect(find.text('⚙️ Ajustes'), findsOneWidget);
+    expect(find.text('Ajustes'), findsOneWidget);
     // El clima servido por el MockClient llega a la tarjeta.
     expect(find.textContaining('21°C'), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -116,7 +116,7 @@ void main() {
     await pumpApp(tester);
     await settle(tester);
 
-    await tester.tap(find.text('⚙️ Ajustes'), warnIfMissed: false);
+    await tester.tap(find.text('Ajustes'), warnIfMissed: false);
     await settle(tester, frames: 8);
     expect(find.text('Pantalla'), findsOneWidget);
     expect(find.text('Red Wi-Fi'), findsOneWidget);
@@ -149,7 +149,7 @@ void main() {
     await pumpApp(tester);
     await settle(tester);
 
-    await tester.tap(find.text('🌙 Noche'), warnIfMissed: false);
+    await tester.tap(find.text('Noche'), warnIfMissed: false);
     await settle(tester);
 
     // SmartDisplayApp guarda con un retardo de 500 ms tras el cambio.
@@ -167,7 +167,7 @@ void main() {
     await pumpApp(tester);
     await settle(tester);
 
-    await tester.tap(find.text('💤 Reposo'), warnIfMissed: false);
+    await tester.tap(find.text('Reposo'), warnIfMissed: false);
     await settle(tester);
     expect(find.text('Toca para despertar'), findsOneWidget);
 

@@ -12,7 +12,6 @@
       "name": "PiHome Ultimate (Linux / Raspberry Pi)",
       "request": "launch",
       "type": "dart",
-      "deviceId": "linux",
       "program": "lib/main.dart"
     },
     {
